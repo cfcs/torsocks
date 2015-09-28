@@ -19,6 +19,8 @@
 #include <stdarg.h>
 #include <sys/mman.h>
 
+#include <stdlib.h>
+
 #include <common/log.h>
 
 #include "torsocks.h"
@@ -26,375 +28,140 @@
 /* syscall(2) */
 TSOCKS_LIBC_DECL(syscall, LIBC_SYSCALL_RET_TYPE, LIBC_SYSCALL_SIG)
 
-/*
- * Handle open syscall to be called with tsocks call.
- */
-static LIBC_OPEN_RET_TYPE handle_open(va_list args)
-{
-	char *file;
-	int flags;
-
-	file = va_arg(args, char *);
-	flags = va_arg(args, int);
-
-	return tsocks_open(file, flags, args);
-}
-
-/*
- * Handle close syscall to be called with tsocks call.
- */
-static LIBC_CLOSE_RET_TYPE handle_close(va_list args)
-{
-	int fd;
-
-	fd = va_arg(args, int);
-
-	return tsocks_close(fd);
-}
-
-/*
- * Handle socket syscall to go through Tor.
- */
-static LIBC_SOCKET_RET_TYPE handle_socket(va_list args)
-{
-	int domain, type, protocol;
-
-	domain = va_arg(args, int);
-	type = va_arg(args, int);
-	protocol = va_arg(args, int);
-
-	return tsocks_socket(domain, type, protocol);
-}
-
-/*
- * Handle connect syscall to go through Tor.
- */
-static LIBC_CONNECT_RET_TYPE handle_connect(va_list args)
-{
-	int sockfd;
-	const struct sockaddr *addr;
-	socklen_t addrlen;
-
-	sockfd = va_arg(args, int);
-	addr = va_arg(args, const struct sockaddr *);
-	addrlen = va_arg(args, socklen_t);
-
-	return tsocks_connect(sockfd, addr, addrlen);
-}
-
-/*
- * Handle accept(2) syscall to go through Tor.
- */
-static LIBC_ACCEPT_RET_TYPE handle_accept(va_list args)
-{
-	int sockfd;
-	struct sockaddr *addr;
-	socklen_t addrlen;
-
-	sockfd = va_arg(args, __typeof__(sockfd));
-	addr = va_arg(args, __typeof__(addr));
-	addrlen = va_arg(args, __typeof__(addrlen));
-
-	return tsocks_accept(sockfd, addr, &addrlen);
-}
-
 #if (defined(__linux__) || defined(__darwin__) || (defined(__FreeBSD_kernel__) && defined(__i386__)) || defined(__NetBSD__))
-/*
- * Handle mmap(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_mmap(va_list args)
-{
-	void *addr;
-	size_t len;
-	int prot, flags, fd;
-	off_t offset;
-
-	addr = va_arg(args, __typeof__(addr));
-	len = va_arg(args, __typeof__(len));
-	prot = va_arg(args, __typeof__(prot));
-	flags = va_arg(args, __typeof__(flags));
-	fd = va_arg(args, __typeof__(fd));
-	offset = va_arg(args, __typeof__(offset));
-
-	return (LIBC_SYSCALL_RET_TYPE) mmap(addr, len, prot, flags, fd, offset);
-}
 #endif /* __linux__, __darwin__, __FreeBSD_kernel__, __i386__, __NetBSD__ */
 
-/*
- * Handle munmap(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_munmap(va_list args)
-{
-	void *addr;
-	size_t len;
 
-	addr = va_arg(args, __typeof__(addr));
-	len = va_arg(args, __typeof__(len));
-
-	return (LIBC_SYSCALL_RET_TYPE) munmap(addr, len);
-}
-
-/*
- * Handle getpeername(2) syscall.
- */
-static LIBC_GETPEERNAME_RET_TYPE handle_getpeername(va_list args)
-{
-	int sockfd;
-	struct sockaddr *addr;
-	socklen_t *addrlen;
-
-	sockfd = va_arg(args, __typeof__(sockfd));
-	addr = va_arg(args, __typeof__(addr));
-	addrlen = va_arg(args, __typeof__(addrlen));
-
-	return tsocks_getpeername(sockfd, addr, addrlen);
-}
-
-/*
- * Handle listen(2) syscall.
- */
-static LIBC_LISTEN_RET_TYPE handle_listen(va_list args)
-{
-	int sockfd, backlog;
-
-	sockfd = va_arg(args, __typeof__(sockfd));
-	backlog = va_arg(args, __typeof__(backlog));
-
-	return tsocks_listen(sockfd, backlog);
-}
-
-/*
- * Handle recvmsg(2) syscall.
- */
-static LIBC_RECVMSG_RET_TYPE handle_recvmsg(va_list args)
-{
-	int sockfd, flags;
-	struct msghdr *msg;
-
-	sockfd = va_arg(args, __typeof__(sockfd));
-	msg = va_arg(args, __typeof__(msg));
-	flags = va_arg(args, __typeof__(flags));
-
-	return tsocks_recvmsg(sockfd, msg, flags);
-}
-
-#if defined(__linux__)
-/*
- * Handle gettid(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_gettid(void)
-{
-	return tsocks_libc_syscall(TSOCKS_NR_GETTID);
-}
-
-/*
- * Handle getrandom(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_getrandom(va_list args)
-{
-	void *buf;
-	size_t buflen;
-	unsigned int flags;
-
-	buf = va_arg(args, __typeof__(buf));
-	buflen = va_arg(args, __typeof__(buflen));
-	flags = va_arg(args, __typeof__(flags));
-
-	return tsocks_libc_syscall(TSOCKS_NR_GETRANDOM, buf, buflen, flags);
-}
-
-/*
- * Handle futex(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_futex(va_list args)
-{
-	/* This assumes Linux 2.6.7 or later, as that is when 'val3' was
-	 * added to futex(2).  Kernel versions prior to that are what I
-	 * would consider historic.
-	 */
-	const struct timespec *timeout;
-	int *uaddr, *uaddr2;
-	int op, val, val3;
-
-	uaddr = va_arg(args, __typeof__(uaddr));
-	op = va_arg(args, __typeof__(op));
-	val = va_arg(args, __typeof__(val));
-	timeout = va_arg(args, __typeof__(timeout));
-	uaddr2 = va_arg(args, __typeof__(uaddr2));
-	val3 = va_arg(args, __typeof__(val3));
-
-	return tsocks_libc_syscall(TSOCKS_NR_FUTEX, uaddr, op, val, timeout,
-			uaddr2, val3);
-}
-
-/*
- * Handle accept4(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_accept4(va_list args)
-{
-	int sockfd;
-	struct sockaddr *addr;
-	socklen_t addrlen;
-	int flags;
-
-	sockfd = va_arg(args, __typeof__(sockfd));
-	addr = va_arg(args, __typeof__(addr));
-	addrlen = va_arg(args, __typeof__(addrlen));
-	flags = va_arg(args, __typeof__(flags));
-
-	return tsocks_accept4(sockfd, addr, &addrlen, flags);
-}
-
-/*
- * Handle epoll_create1(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_epoll_create1(va_list args)
-{
-	int flags;
-
-	flags = va_arg(args, __typeof__(flags));
-
-	return epoll_create1(flags);
-}
-
-/*
- * Handle epoll_wait(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_epoll_wait(va_list args)
-{
-	int epfd;
-	struct epoll_event *events;
-	int maxevents;
-	int timeout;
-
-	epfd = va_arg(args, __typeof__(epfd));
-	events = va_arg(args, __typeof__(events));
-	maxevents = va_arg(args, __typeof__(maxevents));
-	timeout = va_arg(args, __typeof__(maxevents));
-
-	return epoll_wait(epfd, events, maxevents, timeout);
-}
-
-/*
- * Handle epoll_pwait(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_epoll_pwait(va_list args)
-{
-	int epfd;
-	struct epoll_event *events;
-	int maxevents;
-	int timeout;
-	const sigset_t *sigmask;
-
-	epfd = va_arg(args, __typeof__(epfd));
-	events = va_arg(args, __typeof__(events));
-	maxevents = va_arg(args, __typeof__(maxevents));
-	timeout = va_arg(args, __typeof__(maxevents));
-	sigmask = va_arg(args, __typeof__(sigmask));
-
-	return epoll_pwait(epfd, events, maxevents, timeout, sigmask);
-}
-
-/*
- * Handle epoll_ctl(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_epoll_ctl(va_list args)
-{
-	int epfd;
-	int op;
-	int fd;
-	struct epoll_event *event;
-
-	epfd = va_arg(args, __typeof__(epfd));
-	op = va_arg(args, __typeof__(op));
-	fd = va_arg(args, __typeof__(fd));
-	event = va_arg(args, __typeof__(event));
-
-	return epoll_ctl(epfd, op, fd, event);
-}
-
-/*
- * Handle eventfd2(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_eventfd2(va_list args)
-{
-	unsigned int initval;
-	int flags;
-
-	initval = va_arg(args, __typeof__(initval));
-	flags = va_arg(args, __typeof__(flags));
-
-	return eventfd(initval, flags);
-}
-
-/*
- * Handle inotify_init1(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_inotify_init1(va_list args)
-{
-	int flags;
-	flags = va_arg(args, __typeof__(flags));
-
-	return inotify_init1(flags);
-}
-
-/*
- * Handle inotify_add_watch(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_inotify_add_watch(va_list args)
-{
-	int fd;
-	const char *pathname;
-	uint32_t mask;
-
-	fd = va_arg(args, __typeof__(fd));
-	pathname = va_arg(args, __typeof__(pathname));
-	mask = va_arg(args, __typeof__(mask));
-
-	return inotify_add_watch(fd, pathname, mask);
-}
-
-/*
- * Handle inotify_rm_watch(2) syscall.
- */
-static LIBC_SYSCALL_RET_TYPE handle_inotify_rm_watch(va_list args)
-{
-	int fd, wd;
-
-	fd = va_arg(args, __typeof__(fd));
-	wd = va_arg(args, __typeof__(wd));
-
-	return inotify_rm_watch(fd, wd);
-}
-#endif /* __linux__ */
+// the CASE macro below takes an identifier and tries to parse it as an int.
+// if undefined, return (-1). Note that the || at the end requires a 0 ending
+#define STRINGIFY(a) #a
+#define ISNUM(a,i) (STRINGIFY(a)[i] <= 0x39 && STRINGIFY(a)[i] >= 0x30)
+#define NUMERIFY(a,i) (ISNUM(a,i) \
+                       ? (STRINGIFY(a)[i] & 0xf) : -1 )
+#define CASE(a) \
+  (ISNUM(a,2) \
+  ? (NUMERIFY(a,0) * 100 + (NUMERIFY(a,1) * 10) + NUMERIFY(a,2)) \
+  : (ISNUM(a,1) \
+    ? (NUMERIFY(a,0) * 10 +  NUMERIFY(a,1)) \
+    : NUMERIFY(a,0))) ||
 
 /*
  * Torsocks call for syscall(2)
  */
-LIBC_SYSCALL_RET_TYPE tsocks_syscall(long int number, va_list args)
+LIBC_SYSCALL_RET_TYPE tsocks_syscall(int number, va_list args)
 {
-	LIBC_SYSCALL_RET_TYPE ret;
+  // TODO SEE: http://syscalls.kernelgrok.com/ for syscall info
+  long arg1, arg2, arg3, arg4, arg5, arg6;
 
-	switch (number) {
-	case TSOCKS_NR_SOCKET:
-		ret = handle_socket(args);
-		break;
-	case TSOCKS_NR_CONNECT:
-		ret = handle_connect(args);
-		break;
-	case TSOCKS_NR_OPEN:
-		ret = handle_open(args);
-	case TSOCKS_NR_CLOSE:
-		ret = handle_close(args);
-		break;
-	case TSOCKS_NR_MMAP:
+  if(
+    CASE(SYS_getpid)
+    CASE(SYS_sync)
+    CASE(SYS_pause)
+    CASE(SYS_getppid)
+    CASE(SYS_getpgrp)
+    CASE(SYS_setsid)
+    CASE(SYS_getuid)
+    CASE(SYS_getgid)
+    CASE(SYS_geteuid)
+    CASE(SYS_getgid)
+    CASE(SYS_geteuid)
+    CASE(SYS_getegid)
+    CASE(SYS_gettid)
+    CASE(SYS_inotify_init)
+    0
+  ) return tsocks_libc_syscall(number);
+
+  arg1 = va_arg(args, long);
+
+  if(
+    CASE(SYS_eventfd)
+    CASE(SYS_inotify_init1)
+    CASE(SYS_epoll_create1)
+    CASE(SYS_inotify_add_watch)
+    0
+  )	return tsocks_libc_syscall(number, arg1);
+
+  switch(number){
+#if defined(__linux__)
+  case TSOCKS_NR_CLOSE:
+    // Handle close syscall to be called with tsocks call.
+    return tsocks_close(arg1); // int fd
+    break;
+#endif // __linux__
+  }
+
+  arg2 = va_arg(args, long);
+
+  switch(number){
+    case TSOCKS_NR_LISTEN:
+      return tsocks_listen(arg1, arg2);
+      break;
+  }
+
+  if(
+    CASE(SYS_tkill)
+    CASE(SYS_epoll_ctl)
+    CASE(SYS_eventfd2)
+    CASE(TSOCKS_NR_MUNMAP)
+    0
+  ) return tsocks_libc_syscall(number, arg1, arg2);
+
+  arg3 = va_arg(args, long);
+  switch(number){
+    case TSOCKS_NR_SOCKET:
+    // Handle socket syscall to go through Tor.
+    // domain, type, socket
+      return tsocks_socket(arg1, arg2, arg3);
+		  break;
+	  case TSOCKS_NR_CONNECT:
+    //Handle connect syscall to go through Tor. int sockfd; const struct sockaddr *addr; 	socklen_t addrlen;
+      return tsocks_connect(arg1, (const struct sockaddr *) arg2, arg3);
+      break;
+    case TSOCKS_NR_ACCEPT:
+      return tsocks_accept(arg1 /*sockfd*/, (struct sockaddr *) arg2 /*addr*/, (socklen_t *) arg3 /*addrlen*/);
+      break;
+    case TSOCKS_NR_GETPEERNAME:
+      return tsocks_getpeername(arg1 /*sockfd*/, (struct sockaddr *) arg2 /*addr*/, (socklen_t *) arg3 /*addrlen*/);
+      break;
+    case TSOCKS_NR_RECVMSG:
+      return tsocks_recvmsg(arg1 /*sockfd*/, (struct msghdr *) arg2 /*msg*/, arg3 /*flags*/);
+      break;
+  }
+
+  if(
+    CASE(SYS_getrandom)
+    CASE(SYS_inotify_add_watch)
+    CASE(SYS_getxattr)
+    CASE(SYS_lgetxattr)
+    0
+  ) return tsocks_libc_syscall(number, arg1, arg2, arg3);
+
+  arg4 = va_arg(args, long);
+  if(
+    CASE(SYS_epoll_wait)
+    0
+  )
+  switch(number){
+  #if defined(__linux__)
+    case TSOCKS_NR_ACCEPT4:
+      return tsocks_accept4(arg1 /*sockfd*/, (struct sockaddr *) arg2 /*addr*/, (socklen_t *) arg3 /*addrlen*/, arg4 /*flags*/);
+      break;
+  #endif // __linux__
+  }
+
+  arg5 = va_arg(args, long);
+  if(
+    CASE(SYS_epoll_pwait)
+    0
+  ) return tsocks_libc_syscall(number, arg1, arg2, arg3, arg4, arg5);
+
+  arg6 = va_arg(args, long);
+  if(number == TSOCKS_NR_MMAP){
 #if (defined(__NetBSD__) || defined(__FreeBSD__) || defined(__FreeBSD_kernel__)) && defined(__x86_64)
-		/*
-		 * On an 64 bit *BSD system, __syscall(2) should be used for mmap().
-		 * This is NOT suppose to happen but for protection we deny that call.
-		 */
-		ret = -1;
-		errno = ENOSYS;
+		 // On an 64 bit *BSD system, __syscall(2) should be used for mmap().
+		 // This is NOT suppose to happen but for protection we deny that call.
+      errno = ENOSYS;
+      return (-1);
 #else
 		/*
 		 * The mmap/munmap syscall are handled here for a very specific case so
@@ -416,75 +183,23 @@ LIBC_SYSCALL_RET_TYPE tsocks_syscall(long int number, va_list args)
 		 * This crazy situation is present in Mozilla Firefox which handles its
 		 * own memory using mmap() called by syscall(). Same for munmap().
 		 */
-		ret = handle_mmap(args);
-#endif /* __NetBSD__, __FreeBSD__, __FreeBSD_kernel__, __x86_64 */
-		break;
-	case TSOCKS_NR_MUNMAP:
-		ret = handle_munmap(args);
-		break;
-	case TSOCKS_NR_ACCEPT:
-		ret = handle_accept(args);
-		break;
-	case TSOCKS_NR_GETPEERNAME:
-		ret = handle_getpeername(args);
-		break;
-	case TSOCKS_NR_LISTEN:
-		ret = handle_listen(args);
-		break;
-	case TSOCKS_NR_RECVMSG:
-		ret = handle_recvmsg(args);
-		break;
-#if defined(__linux__)
-	case TSOCKS_NR_GETTID:
-		ret = handle_gettid();
-		break;
-	case TSOCKS_NR_GETRANDOM:
-		ret = handle_getrandom(args);
-		break;
-	case TSOCKS_NR_FUTEX:
-		ret = handle_futex(args);
-		break;
-	case TSOCKS_NR_ACCEPT4:
-		ret = handle_accept4(args);
-		break;
-	case TSOCKS_NR_EPOLL_CREATE1:
-		ret = handle_epoll_create1(args);
-		break;
-	case TSOCKS_NR_EPOLL_WAIT:
-		ret = handle_epoll_wait(args);
-		break;
-	case TSOCKS_NR_EPOLL_PWAIT:
-		ret = handle_epoll_pwait(args);
-		break;
-	case TSOCKS_NR_EPOLL_CTL:
-		ret = handle_epoll_ctl(args);
-		break;
-	case TSOCKS_NR_EVENTFD2:
-		ret = handle_eventfd2(args);
-		break;
-	case TSOCKS_NR_INOTIFY_INIT1:
-		ret = handle_inotify_init1(args);
-		break;
-	case TSOCKS_NR_INOTIFY_ADD_WATCH:
-		ret = handle_inotify_add_watch(args);
-		break;
-	case TSOCKS_NR_INOTIFY_RM_WATCH:
-		ret = handle_inotify_rm_watch(args);
-		break;
-#endif /* __linux__ */
-	default:
-		/*
-		 * Because of the design of syscall(), we can't pass a va_list to it so
-		 * we are constraint to use a whitelist scheme and denying the rest.
-		 */
-		WARN("[syscall] Unsupported syscall number %ld. Denying the call",
-				number);
-		ret = -1;
-		errno = ENOSYS;
-		break;
-	}
+#endif /* __NetBSD__, __FreeBSD__, __FreeBSD_kernel__, __x86_64 ^-- ELSE CASE */
+  }
+  if(
+    CASE(SYS_mmap)
+    CASE(SYS_futex)
+    0
+  ) return tsocks_libc_syscall(number, arg1, arg2, arg3, arg4, arg5, arg6);
+     /* Handle futex(2) syscall.
+     * This assumes Linux 2.6.7 or later, as that is when 'val3' was
+     * added to futex(2).  Kernel versions prior to that are what I -TODO TAKE LSD, GET RID OF "I"-
+     * would consider historic.
+     * TODO meanwhile 2.4 is still common in embedded systems, so this should be fixed TODO */
 
-	return ret;
+  WARN("[syscall] Unsupported syscall number %ld. Denying the call",
+				number);
+  errno = ENOSYS;
+  return (-1);
 }
 
 /*
@@ -492,8 +207,7 @@ LIBC_SYSCALL_RET_TYPE tsocks_syscall(long int number, va_list args)
  */
 LIBC_SYSCALL_DECL
 {
-	LIBC_SYSCALL_RET_TYPE ret;
-	va_list args;
+  va_list args;
 
 	if (!tsocks_libc_syscall) {
 		tsocks_initialize();
@@ -501,11 +215,8 @@ LIBC_SYSCALL_DECL
 				LIBC_SYSCALL_NAME_STR, TSOCKS_SYM_EXIT_NOT_FOUND);
 	}
 
-	va_start(args, number);
-	ret = tsocks_syscall(number, args);
-	va_end(args);
-
-	return ret;
+  // TODO consider merging these two functions
+	return tsocks_syscall(number, args);
 }
 
 /* Only used for *BSD systems. */
@@ -513,26 +224,6 @@ LIBC_SYSCALL_DECL
 
 /* __syscall(2) */
 TSOCKS_LIBC_DECL(__syscall, LIBC___SYSCALL_RET_TYPE, LIBC___SYSCALL_SIG)
-
-/*
- * Handle *BSD mmap(2) syscall.
- */
-static LIBC___SYSCALL_RET_TYPE handle_bsd_mmap(va_list args)
-{
-	void *addr;
-	size_t len;
-	int prot, flags, fd;
-	off_t offset;
-
-	addr = va_arg(args, __typeof__(addr));
-	len = va_arg(args, __typeof__(len));
-	prot = va_arg(args, __typeof__(prot));
-	flags = va_arg(args, __typeof__(flags));
-	fd = va_arg(args, __typeof__(fd));
-	offset = va_arg(args, __typeof__(offset));
-
-	return (LIBC___SYSCALL_RET_TYPE) mmap(addr, len, prot, flags, fd, offset);
-}
 
 LIBC___SYSCALL_RET_TYPE tsocks___syscall(quad_t number, va_list args)
 {
@@ -544,7 +235,8 @@ LIBC___SYSCALL_RET_TYPE tsocks___syscall(quad_t number, va_list args)
 		 * Please see the mmap comment in the syscall() function to understand
 		 * why mmap is being hijacked.
 		 */
-		ret = handle_bsd_mmap(args);
+    // TODO this is BSD-style mmap:
+    return (LIBC___SYSCALL_RET_TYPE) mmap((void *) arg1 /*addr*/, (size_t) arg2 /*len*/, arg3 /*prot*/, arg4 /*flags*/, arg5 /*fd*/, (off_t) arg6 /*offset*/);
 		break;
 	default:
 		/*

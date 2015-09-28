@@ -240,7 +240,7 @@ error_dlopen:
 }
 
 /*
- * Initialize logging subsytem using either the default values or the one given
+ * Initialize logging subsystem using either the default values or the one given
  * by the environment variables.
  */
 static void init_logging(void)
@@ -287,6 +287,121 @@ static void init_logging(void)
 			level, filepath, t_status);
 }
 
+/* seccomp-bpf constructor. Load a seccomp policy to the kernel restricting
+ * socket operations to AF_UNIX
+ */
+#ifdef USE_SECCOMP
+
+#define TSOCKS_SCMP_ACT SCMP_ACT_KILL
+// TODO consider SCMP_ACT_ERRNO
+
+#define TSOCKS_SECCOMP_RULE(action, sys_name, ...) do { \
+  int sys_num = seccomp_syscall_resolve_name_arch(arch, sys_name); \
+  if(sys_num != __NR_SCMP_ERROR){ \
+    if(seccomp_rule_add(ctx, action, sys_num, \
+      __VA_ARGS__ ) < 0){ \
+      printf("unable to add syscall %s rules for arch %d\n", sys_name, arch);\
+      clean_exit(EXIT_FAILURE); \
+    } \
+  }}while(0);
+
+#define TSOCKS_SECCOMP_WHITELIST(sys_name, ...) TSOCKS_SECCOMP_RULE(SCMP_ACT_ALLOW, sys_name, __VA_ARGS__)
+#define TSOCKS_SECCOMP_BLACKLIST(sys_name, ...) TSOCKS_SECCOMP_RULE(SCMP_ACT_KILL, sys_name, __VA_ARGS__)
+
+static void tsocks_seccomp_init_add_rules(scmp_filter_ctx ctx, const uint32_t arch)
+{
+
+  printf("adding rules\n");
+
+  TSOCKS_SECCOMP_WHITELIST("socket", 1, SCMP_A0(SCMP_CMP_EQ, AF_UNIX))
+  TSOCKS_SECCOMP_WHITELIST("socket", 1, SCMP_A0(SCMP_CMP_EQ, AF_NETLINK))
+  printf("added whitelist\n");
+  TSOCKS_SECCOMP_BLACKLIST("socket", 0)
+
+    printf("added blacklist\n");
+
+  //TSOCKS_SECCOMP_BLACKLIST("socket", 0)
+  TSOCKS_SECCOMP_BLACKLIST("connect", 0)
+  TSOCKS_SECCOMP_BLACKLIST("sendto", 0)
+}
+
+static scmp_filter_ctx * tsocks_seccomp_init_arch(scmp_filter_ctx src_ctx, const uint32_t arch){
+  scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_TRAP);
+
+  if(0 == seccomp_arch_exist(src_ctx, arch)){
+    // already exists in the context
+    return src_ctx;
+  }
+
+  printf("arch_add\n");
+  if(seccomp_arch_add(ctx, arch) < 0){
+    printf("arch: %d", arch);
+    clean_exit(EXIT_FAILURE);
+  }
+
+  tsocks_seccomp_init_add_rules(ctx, arch);
+
+  printf("merging contexts\n");
+  if(seccomp_merge(ctx, src_ctx) < 0){
+    clean_exit(EXIT_FAILURE);
+  }
+
+  return ctx;
+}
+
+static void tsocks_seccomp_init(){
+  int ret = -1;
+
+  scmp_filter_ctx ctx;
+
+  printf("initializing archs\n");
+
+  ctx = seccomp_init(SCMP_ACT_TRAP);
+  if(ctx == NULL){
+    clean_exit(EXIT_FAILURE);
+  }
+
+  tsocks_seccomp_init_add_rules(ctx, SCMP_ARCH_NATIVE);
+
+  printf("initialized arch NATIVE\n");
+
+  // since the user could be cross-compiling,
+  // add as many archs as possible:
+  // TODO does seccomp support more than libseccomp?
+
+  // not working:
+  //ctx = tsocks_seccomp_init_arch(ctx, SCMP_ARCH_X32);
+  //ctx = tsocks_seccomp_init_arch(ctx, SCMP_ARCH_X86);
+
+  // working
+  //ctx = tsocks_seccomp_init_arch(ctx, SCMP_ARCH_X86_64);
+
+  // almost working
+  ////ctx = tsocks_seccomp_init_arch(ctx, SCMP_ARCH_ARM);
+
+  #ifdef SCMP_FLTATR_CTL_TSYNC
+  // synchronize filter across all threads on seccomp_load()
+  // TODO SCMP_FLTATR_ACT_BADARCH
+  printf("synchronizing filters\n");
+  ret = seccomp_attr_set(ctx, SCMP_FLTATR_CTL_TSYNC, 1);
+  if(ret < 0){
+    clean_exit(EXIT_FAILURE);
+  }
+  #endif
+
+  // commit the ruleset to the kernel
+  printf("loading policy");
+  ret = seccomp_load(ctx);
+  if(ret < 0){
+    clean_exit(EXIT_FAILURE);
+  }
+
+  printf("releasing context\n");
+  seccomp_release(ctx);
+  printf("seccomp loaded\n");
+}
+#endif
+
 /*
  * Lib constructor. Initialize torsocks here before the main execution of the
  * binary we are preloading.
@@ -321,6 +436,10 @@ static void tsocks_init(void)
 	if (ret < 0) {
 		clean_exit(EXIT_FAILURE);
 	}
+
+#ifdef USE_SECCOMP
+  tsocks_seccomp_init();
+#endif
 }
 
 /*

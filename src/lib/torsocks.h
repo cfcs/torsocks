@@ -22,6 +22,11 @@
 
 #include <common/compat.h>
 #include <common/config-file.h>
+#include <string.h>
+
+#ifdef USE_SECCOMP
+#include <seccomp.h>
+#endif
 
 /*
  * This defines a function pointer to the original libc call of "name" so the

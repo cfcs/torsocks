@@ -222,6 +222,24 @@ fi
   AC_DEFINE_UNQUOTED([CONF_FILE], ["${CONFDIR}/torsocks.conf"],[Description])
 ])
 
+AC_ARG_WITH([seccomp],
+            [AS_HELP_STRING([--with-seccomp], [use seccomp-bpf to prevent raw syscalls from bypassing torsocks] @@)],
+            [],
+            [with_seccomp=yes]
+)
+
+AS_IF([test "x$with_seccomp" != xno],
+  [
+    dnl Checking for existence of seccomp
+    AC_CHECK_LIB([seccomp] ,[seccomp_init], [], [AC_MSG_ERROR("libseccomp not found")] )
+    AC_DEFINE_UNQUOTED([USE_SECCOMP], [1], [Use seccomp])
+  ],
+  [
+    dnl seccomp support not requested
+    AC_DEFINE_UNQUOTED([USE_SECCOMP], [0], [Do not use seccomp])
+  ]
+)
+
 ##############################################################################
 # 8. Clean up and create some supporting scripts from their *.in files
 ##############################################################################
