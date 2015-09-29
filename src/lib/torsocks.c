@@ -310,23 +310,92 @@ static void init_logging(void)
 
 static void tsocks_seccomp_init_add_rules(scmp_filter_ctx ctx, const uint32_t arch)
 {
-
+  // TODO hardening: should add prctl(PR_SET_DUMPABLE, false) for all linux to disable coredumps
+  // PR_SET_NO_NEW_PRIVS
+  // TODO man capabilitites: prctl(PR_SET_SECUREBITS, SECBIT_NOROOT);
+  // TODO prctl(PR_SET_TSC, 0)
   printf("adding rules\n");
 
-  TSOCKS_SECCOMP_WHITELIST("socket", 1, SCMP_A0(SCMP_CMP_EQ, AF_UNIX))
-  TSOCKS_SECCOMP_WHITELIST("socket", 1, SCMP_A0(SCMP_CMP_EQ, AF_NETLINK))
   printf("added whitelist\n");
-  TSOCKS_SECCOMP_BLACKLIST("socket", 0)
 
-    printf("added blacklist\n");
 
-  //TSOCKS_SECCOMP_BLACKLIST("socket", 0)
-  TSOCKS_SECCOMP_BLACKLIST("connect", 0)
-  TSOCKS_SECCOMP_BLACKLIST("sendto", 0)
+  // disallow listening sockets:
+  TSOCKS_SECCOMP_BLACKLIST("listen", 0)
+  TSOCKS_SECCOMP_BLACKLIST("bind", 0)
+  TSOCKS_SECCOMP_BLACKLIST("accept", 0)
+
+  // only allow creation of sockets in the AF_UNIX namespace:
+  // that is, only allow [named unix sockets] and [abstract unix sockets]
+  TSOCKS_SECCOMP_BLACKLIST("socket", 1, SCMP_A0(SCMP_CMP_NE, PF_UNIX))
+  // TODO consider blocking socketpair()
+  //TSOCKS_SECCOMP_BLACKLIST("socket", 1, SCMP_A0(SCMP_CMP_NE, PF_NETLINK))
+
+  // block socketcall() since it allows socket(), etc to be called.
+  // BPF doesn't deref userspace pointers, so we can't examine the arguments.
+  // x86 only has socketcall() TODO investigate, so we might want:
+  ////// TSOCKS_SECCOMP_BLACKLIST("socketcall", 1, SCMP_A0(SCMP_CMP_EQ, SYS_SOCKET))
+  #if defined( __i386__ )
+    #define SYS_SOCKET 1
+    // blacklist socket() on x86, but allow other socketcall()
+    TSOCKS_SECCOMP_BLACKLIST("socketcall", 1, SCMP_A0(SCMP_CMP_EQ, SYS_SOCKET))
+  #else
+    TSOCKS_SECCOMP_BLACKLIST("socketcall", 0)
+  #endif // __i386__
+
+  // disable ptrace-related functions for process manipulation
+  TSOCKS_SECCOMP_BLACKLIST("ptrace", 0) // trace other processes
+  TSOCKS_SECCOMP_BLACKLIST("process_vm_readv", 0) // trace other processes
+  TSOCKS_SECCOMP_BLACKLIST("process_vm_writev", 0) // trace other processes
+
+  // disable FS-related privileged operations
+  TSOCKS_SECCOMP_BLACKLIST("mount", 0)  // mount new file systems
+  TSOCKS_SECCOMP_BLACKLIST("umount", 0) // unmount currently mounted file systems
+  TSOCKS_SECCOMP_BLACKLIST("umount2", 0) // unmount currently mounted file systems
+  TSOCKS_SECCOMP_BLACKLIST("mknod", 0)
+
+  // disable generally dodgy syscalls
+  TSOCKS_SECCOMP_BLACKLIST("sethostname", 0)
+  TSOCKS_SECCOMP_BLACKLIST("reboot", 0)
+  TSOCKS_SECCOMP_BLACKLIST("swapon", 0) // enable swap (paging to disk)
+  TSOCKS_SECCOMP_BLACKLIST("ioperm", 0)
+  TSOCKS_SECCOMP_BLACKLIST("iopl", 0)
+  TSOCKS_SECCOMP_BLACKLIST("vm86", 0)
+  TSOCKS_SECCOMP_BLACKLIST("kcmp", 0)
+  TSOCKS_SECCOMP_BLACKLIST("vm86old", 0)
+  TSOCKS_SECCOMP_BLACKLIST("setdomainname", 0)
+  TSOCKS_SECCOMP_BLACKLIST("newuname", 0)
+  TSOCKS_SECCOMP_BLACKLIST("migrate_pages", 0)
+
+  // disallow operations related to loadable kernel modules
+  TSOCKS_SECCOMP_BLACKLIST("create_module", 0)
+  TSOCKS_SECCOMP_BLACKLIST("init_module", 0)
+  TSOCKS_SECCOMP_BLACKLIST("finit_module", 0)
+  TSOCKS_SECCOMP_BLACKLIST("delete_module", 0)
+  TSOCKS_SECCOMP_BLACKLIST("kexec_load", 0)
+
+  // disable PCI device manipulation
+  TSOCKS_SECCOMP_BLACKLIST("pciconfig_iobase", 0)
+  TSOCKS_SECCOMP_BLACKLIST("pciconfig_read", 0)
+  TSOCKS_SECCOMP_BLACKLIST("pciconfig_write", 0)
+
+  // control kernel nfs daemon
+  TSOCKS_SECCOMP_BLACKLIST("nfsservctl", 0)
+
+  // disable "key" manipulation
+  TSOCKS_SECCOMP_BLACKLIST("keyctl", 0)
+  TSOCKS_SECCOMP_BLACKLIST("request_key", 0)
+  TSOCKS_SECCOMP_BLACKLIST("add_key", 0)
+
+  // limit access to setting time
+  TSOCKS_SECCOMP_BLACKLIST("stime", 0)  // set system time
+  TSOCKS_SECCOMP_BLACKLIST("clock_adjtime", 0) // TODO INVESTIGATE
+  TSOCKS_SECCOMP_BLACKLIST("clock_settime", 0) // TODO INVESTIGATE
+
+  printf("added blacklist\n");
 }
 
 static scmp_filter_ctx * tsocks_seccomp_init_arch(scmp_filter_ctx src_ctx, const uint32_t arch){
-  scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_TRAP);
+  scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_ALLOW);
 
   if(0 == seccomp_arch_exist(src_ctx, arch)){
     // already exists in the context
@@ -356,7 +425,7 @@ static void tsocks_seccomp_init(){
 
   printf("initializing archs\n");
 
-  ctx = seccomp_init(SCMP_ACT_TRAP);
+  ctx = seccomp_init(SCMP_ACT_ALLOW);
   if(ctx == NULL){
     clean_exit(EXIT_FAILURE);
   }
@@ -411,7 +480,7 @@ static void tsocks_init(void)
 	int ret;
 
 	/* UID and effective UID MUST be the same or else we are SUID. */
-	is_suid = (getuid() != geteuid());
+	is_suid = (getuid() != geteuid()) || (getgid() != getegid());
 
 	init_logging();
 

@@ -31,7 +31,7 @@ TSOCKS_LIBC_DECL(syscall, LIBC_SYSCALL_RET_TYPE, LIBC_SYSCALL_SIG)
 #if (defined(__linux__) || defined(__darwin__) || (defined(__FreeBSD_kernel__) && defined(__i386__)) || defined(__NetBSD__))
 #endif /* __linux__, __darwin__, __FreeBSD_kernel__, __i386__, __NetBSD__ */
 
-
+// TODO https://github.com/gregose/syscall-table/blob/master/gen_syscalls.py
 // the CASE macro below takes an identifier and tries to parse it as an int.
 // if undefined, return (-1). Note that the || at the end requires a 0 ending
 #define STRINGIFY(a) #a
@@ -205,6 +205,7 @@ LIBC_SYSCALL_RET_TYPE tsocks_syscall(int number, va_list args)
 /*
  * Libc hijacked symbol syscall(2).
  */
+//TODO #ifdef USE_SECCOMP
 LIBC_SYSCALL_DECL
 {
   va_list args;
@@ -218,6 +219,7 @@ LIBC_SYSCALL_DECL
   // TODO consider merging these two functions
 	return tsocks_syscall(number, args);
 }
+//TODO #endif // ifndef USE_SECCOMP
 
 /* Only used for *BSD systems. */
 #if (defined(__NetBSD__) || defined(__FreeBSD__))
