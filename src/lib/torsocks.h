@@ -24,9 +24,11 @@
 #include <common/config-file.h>
 #include <string.h>
 
+
+void tsocks_seccomp_init(void);
 #ifdef USE_SECCOMP
 #include <seccomp.h>
-#endif
+#endif // USE_SECCOMP
 
 /*
  * This defines a function pointer to the original libc call of "name" so the

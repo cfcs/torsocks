@@ -205,7 +205,6 @@ LIBC_SYSCALL_RET_TYPE tsocks_syscall(int number, va_list args)
 /*
  * Libc hijacked symbol syscall(2).
  */
-//TODO #ifdef USE_SECCOMP
 LIBC_SYSCALL_DECL
 {
   va_list args;
@@ -216,10 +215,8 @@ LIBC_SYSCALL_DECL
 				LIBC_SYSCALL_NAME_STR, TSOCKS_SYM_EXIT_NOT_FOUND);
 	}
 
-  // TODO consider merging these two functions
 	return tsocks_syscall(number, args);
 }
-//TODO #endif // ifndef USE_SECCOMP
 
 /* Only used for *BSD systems. */
 #if (defined(__NetBSD__) || defined(__FreeBSD__))
